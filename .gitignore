@@ -1,0 +1,13 @@
+node_modules/
+node_modules.incomplete-*/
+dist/
+release/
+playwright-report/
+test-results/
+package-lock.incomplete-*.json
+*.log
+output/
+.playwright-cli/
+.env
+.env.*
+!.env.example

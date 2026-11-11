@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>发送适配器测试页面</title>
+<div id="main"><header><span id="phone" title=""></span></header><section id="messages"></section><footer><div role="textbox" contenteditable="true"></div><button aria-label="发送"><span data-icon="send">发送</span></button></footer></div>
+<input type="file" accept="image/*" hidden><input type="file" hidden>
+<script>
+const phone = new URLSearchParams(location.search).get('phone');
+document.querySelector('#phone').textContent = '+' + phone;
+document.querySelector('#phone').title = '+' + phone;
+function sendBubble(file) {
+ const input = document.querySelector('[contenteditable]');
+ const bubble = document.createElement('div');
+ bubble.dataset.id = `true_${phone}@c.us_${Date.now()}_${Math.random()}`;
+ const content = document.createElement('span'); content.className = 'selectable-text'; content.textContent = input.innerText;
+ if(file){content.textContent=file.name;if(file.type.startsWith('image/')){const image=document.createElement('img');image.src=URL.createObjectURL(file);bubble.append(image);}}
+ const icon = document.createElement('span'); icon.dataset.icon = 'msg-time';
+ bubble.append(content, icon); document.querySelector('#messages').append(bubble); input.textContent = '';
+ setTimeout(() => { icon.dataset.icon = phone.endsWith('2') ? 'msg-error' : phone.endsWith('3') ? 'msg-time' : 'msg-check'; }, 80);
+}
+document.querySelector('button').onclick = () => sendBubble();
+document.querySelectorAll('input[type="file"]').forEach(input=>input.onchange=()=>{
+ const file=input.files[0];const preview=document.createElement('div');preview.id='artway-media-preview';preview.setAttribute('role','dialog');
+ const button=document.createElement('button');button.innerHTML='<span data-icon="send">发送</span>';button.onclick=()=>{sendBubble(file);preview.remove();};preview.append(file.name,button);document.body.append(preview);
+});
+</script>
