@@ -45,6 +45,7 @@ let browserVisible = true;
 let isQuitting = false;
 let tray = null;
 let trayMenu = null;
+let startupShowTimer = null;
 const accountViews = new Map();
 const pendingCustomerImports = new Map();
 
@@ -94,11 +95,18 @@ function createMainWindow() {
   });
 
   if (process.env.ARTWAY_START_HIDDEN !== "1") {
-    mainWindow.once("ready-to-show", () => mainWindow?.show());
+    const showStartup = () => {
+      clearTimeout(startupShowTimer);
+      if (mainWindow && !mainWindow.isDestroyed()) showMainWindow();
+    };
+    mainWindow.once("ready-to-show", showStartup);
+    mainWindow.webContents.once("did-finish-load", showStartup);
+    startupShowTimer = setTimeout(showStartup, 2500);
   }
   mainWindow.on("close", (event) => {
     if (!isQuitting && tray && !tray.isDestroyed()) {
       event.preventDefault();
+      clearTimeout(startupShowTimer);
       mainWindow.hide();
       mainWindow.setSkipTaskbar(true);
     }
@@ -107,6 +115,7 @@ function createMainWindow() {
     for (const view of accountViews.values()) destroyView(view);
     accountViews.clear();
     attachedView = null;
+    clearTimeout(startupShowTimer);
     mainWindow = null;
   });
 
@@ -173,7 +182,12 @@ async function applyFingerprint(view, account) {
 }
 
 function getOrCreateAccountView(account) {
-  if (accountViews.has(account.id)) return accountViews.get(account.id);
+  if (accountViews.has(account.id)) {
+    const existing = accountViews.get(account.id);
+    if (!existing.webContents.isDestroyed() && !existing.needsRecovery) return existing;
+    destroyView(existing);
+    accountViews.delete(account.id);
+  }
 
   const accountSession = session.fromPartition(partitionName(account.id), { cache: true });
   configureAccountSession(accountSession, { preconnect: !useMockBrowser });
@@ -198,9 +212,13 @@ function getOrCreateAccountView(account) {
     if (!isAllowedNavigation(targetUrl)) event.preventDefault();
   });
   view.webContents.on("did-start-loading", () => emitStatus(account.id, "loading"));
-  view.webContents.on("did-finish-load", () => emitStatus(account.id, "ready", view.webContents.getURL()));
+  view.webContents.on("did-finish-load", () => {
+    view.needsRecovery = false;
+    emitStatus(account.id, "ready", view.webContents.getURL());
+  });
   view.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
     if (errorCode === -3 || !isMainFrame) return;
+    view.needsRecovery = true;
     emitStatus(account.id, "error", describeNavigationFailure(errorCode, errorDescription, validatedUrl));
   });
   view.webContents.on("console-message", (_event, level, message, line, sourceId) => {
@@ -208,6 +226,7 @@ function getOrCreateAccountView(account) {
     console.warn(`[ArtwayWhatsapp:${account.id}] WhatsApp 页面脚本错误：${message}（${sourceId}:${line}）`);
   });
   view.webContents.on("render-process-gone", (_event, details) => {
+    view.needsRecovery = true;
     emitStatus(account.id, "error", `WhatsApp 浏览器进程已停止：${details.reason || "未知原因"}`);
   });
 
@@ -216,7 +235,7 @@ function getOrCreateAccountView(account) {
   view.initialLoad = applyFingerprint(view, account)
     .catch((error) => emitStatus(account.id, "error", `浏览器档案应用失败: ${error.message}`))
     .then(() => view.webContents.loadURL(useMockBrowser ? `${MOCK_URL}?name=${encodeURIComponent(account.name)}` : WHATSAPP_URL))
-    .catch((error) => emitStatus(account.id, "error", error.message));
+    .catch((error) => { view.needsRecovery = true; emitStatus(account.id, "error", error.message); });
   return view;
 }
 
@@ -398,7 +417,11 @@ function registerIpcHandlers() {
     if (!activeAccountId) throw new Error("请先选择一个账号。");
     const view = accountViews.get(activeAccountId);
     if (!view) throw new Error("账号浏览器尚未打开。");
-    view.webContents.reload();
+    if (view.needsRecovery || view.webContents.isDestroyed()) {
+      const replacement = getOrCreateAccountView(accountStore.get(activeAccountId));
+      replacement.setBounds(browserBounds);
+      attachActiveView();
+    } else view.webContents.reload();
     return { ok: true };
   });
 

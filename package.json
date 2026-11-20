@@ -1,7 +1,7 @@
 {
   "name": "artway-whatsapp",
-  "version": "0.1.0",
-  "description": "ArtwayWhatsapp multi-account desktop workspace",
+  "version": "0.1.1",
+  "description": "WhatsApp 多账号与客户消息管理桌面软件",
   "author": "Artway",
   "main": "electron/main.cjs",
   "private": true,

@@ -1,6 +1,6 @@
 <!doctype html><meta charset="utf-8"><title>发送适配器测试页面</title>
 <div id="main"><header><span id="phone" title=""></span></header><section id="messages"></section><footer><div role="textbox" contenteditable="true"></div><button aria-label="发送"><span data-icon="send">发送</span></button></footer></div>
-<input type="file" accept="image/*" hidden><input type="file" hidden>
+<input type="file" accept="image/*" hidden><input type="file" accept="image/*,video/mp4" multiple hidden><input type="file" hidden>
 <script>
 const phone = new URLSearchParams(location.search).get('phone');
 document.querySelector('#phone').textContent = '+' + phone;
@@ -17,6 +17,7 @@ function sendBubble(file) {
 }
 document.querySelector('button').onclick = () => sendBubble();
 document.querySelectorAll('input[type="file"]').forEach(input=>input.onchange=()=>{
+ if(!input.multiple && input.accept==='image/*')throw new Error('Sticker input must never be selected');
  const file=input.files[0];const preview=document.createElement('div');preview.id='artway-media-preview';preview.setAttribute('role','dialog');
  const button=document.createElement('button');button.innerHTML='<span data-icon="send">发送</span>';button.onclick=()=>{sendBubble(file);preview.remove();};preview.append(file.name,button);document.body.append(preview);
 });

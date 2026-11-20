@@ -8,6 +8,7 @@ class CampaignStore {
     this.data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { version: 1, templates: [], jobs: [] };
     if (!Array.isArray(this.data.templates) || !Array.isArray(this.data.jobs)) throw new Error('群发数据文件格式无效。');
   }
+  pruneJobs() { const next=this.snapshot(); next.jobs=retainRecentJobs(next.jobs); if(next.jobs.length!==this.data.jobs.length)this.commit(next); }
   snapshot() { return structuredClone(this.data); }
   commit(next) {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
@@ -36,8 +37,17 @@ class CampaignStore {
     const next = this.snapshot();
     const index = next.jobs.findIndex(j => j.id === job.id);
     if (index >= 0) next.jobs[index] = structuredClone(job); else next.jobs.unshift(structuredClone(job));
+    next.jobs = retainRecentJobs(next.jobs);
     this.commit(next);
   }
+}
+
+function retainRecentJobs(jobs) {
+  const sorted = [...jobs].sort((a,b)=>Date.parse(b.createdAt||0)-Date.parse(a.createdAt||0));
+  const protectedJobs = sorted.filter(job=>['running','paused'].includes(job.status)||job.rows?.some(row=>row.status==='succeeded'&&!row.contactRecorded));
+  const keep = new Set(protectedJobs.map(job=>job.id));
+  for(const job of sorted) { if(keep.size>=10)break; keep.add(job.id); }
+  return sorted.filter(job=>keep.has(job.id));
 }
 
 function text(value, max, label) {

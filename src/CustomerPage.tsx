@@ -30,9 +30,6 @@ export function CustomerPage({ customers, accounts, activeId, loading, onImport,
     setError("");
   }, [selected]);
   useEffect(() => { if (!accounts.some((item) => item.id === accountId)) setAccountId(activeId || accounts[0]?.id || ""); }, [accounts, activeId, accountId]);
-  useEffect(() => window.artway.onCampaignUpdate(job => {
-    if (job.rows.some(row => row.status === 'succeeded')) void window.artway.listCustomers().then(onCustomers).catch(reason => setError(String(reason.message)));
-  }), [onCustomers]);
   const dirty = Boolean(selected && (JSON.stringify(draft.models || []) !== JSON.stringify(selected.models || []) || (draft.contact || "") !== (selected.contact || "") || draft.name !== selected.name || draft.country !== selected.country || (draft.phone || "") !== (selected.phone || "") || (draft.status || "new") !== (selected.status || "new") || (draft.notes || "") !== (selected.notes || "")));
   const act = async (action: () => Promise<void>) => {
     setBusy(true); setError(""); setNotice("");

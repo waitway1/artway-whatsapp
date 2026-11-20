@@ -21,6 +21,10 @@ test("window close hides to tray, restores and only tray exit quits", async () =
 
   let hasExited = false;
   try {
+    const page = await electronApp.firstWindow();
+    await expect(page.getByRole("button", { name: "展开账号栏", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "展开账号栏", exact: true }).click();
+    await expect(page.getByRole("button", { name: "收起账号栏", exact: true })).toBeVisible();
     const closeState = await electronApp.evaluate(({ BrowserWindow, app }) => {
       const window = BrowserWindow.getAllWindows()[0];
       window.close();
@@ -34,8 +38,12 @@ test("window close hides to tray, restores and only tray exit quits", async () =
       return BrowserWindow.getAllWindows()[0].isVisible();
     });
     expect(restored).toBe(true);
+    await expect(page.getByRole("button", { name: "收起账号栏", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "收起账号栏", exact: true }).click();
     await electronApp.evaluate(({BrowserWindow}) => {const window=BrowserWindow.getAllWindows()[0];window.minimize();window.close();});
     expect(await electronApp.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].isVisible())).toBe(false);
+    await electronApp.evaluate(({app}) => process.mainModule.require(app.getAppPath() + '/electron/main.cjs').getTrayMenu().items.find(item=>item.label==='打开 ArtwayWhatsapp').click());
+    await expect(page.getByRole("button", { name: "展开账号栏", exact: true })).toBeVisible();
     const exited = electronApp.waitForEvent('close');
     await electronApp.evaluate(({app}) => {
       const tray = process.mainModule.require(app.getAppPath() + '/electron/main.cjs').getTray();
@@ -165,7 +173,9 @@ test("creates and isolates two WhatsApp browser profiles", async () => {
   try {
     const window = await electronApp.firstWindow();
     await expect(window).toHaveTitle("ArtwayWhatsapp");
+    await expect.poll(() => electronApp.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(true);
     await expect(window.getByRole("heading", { name: "添加你的第一个账号" })).toBeVisible();
+    await window.getByRole("button", { name: "展开账号栏", exact: true }).click();
 
     await window.getByRole("button", { name: "添加账号" }).first().click();
     await window.getByLabel("账号名称").fill("欧洲销售 01");
@@ -229,6 +239,14 @@ test("creates and isolates two WhatsApp browser profiles", async () => {
     expect(throttleSettings).toEqual([false, false]);
 
     expect(profileSessions[0].storagePath).not.toBe(profileSessions[1].storagePath);
+    const recovery = await electronApp.evaluate(async ({BrowserWindow}) => {
+      const browser = BrowserWindow.getAllWindows()[0].contentView.children.at(-1);
+      browser.needsRecovery = true;
+      return browser.webContents.id;
+    });
+    await window.getByRole("button", { name: "刷新 WhatsApp Web", exact: true }).click();
+    await expect.poll(() => electronApp.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].contentView.children.at(-1)?.webContents.id)).not.toBe(recovery);
+
     expect(profileSessions.every((profile) => profile.storagePath.includes("Partitions"))).toBe(true);
 
     const screenshotPath = path.join(projectRoot, "test-results", "artway-main.png");

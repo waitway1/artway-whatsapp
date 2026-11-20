@@ -19,7 +19,7 @@ class CampaignService {
       for (const row of job.rows.filter(r => r.status === 'succeeded' && !r.contactRecorded)) this.recordSuccess(job, row);
     }
   }
-  state() { return this.store.snapshot(); }
+  state() { this.store.pruneJobs(); return this.store.snapshot(); }
   isBusy(accountId) { return this.running && this.job?.accountId === accountId && ['running', 'paused'].includes(this.job?.status); }
   start(input) {
     if (this.running || this.job?.status === 'paused') throw new Error('请先完成或停止当前群发任务。');

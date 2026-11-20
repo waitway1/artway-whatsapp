@@ -82,7 +82,7 @@ async function verifyNamedRecipient(contents, phone, timeout = 15000) {
       const drawer = [...document.querySelectorAll('[data-testid="new-chat-drawer"], [data-testid="drawer-left"]')].find(n=>n.querySelector('input[role="textbox"], [contenteditable="true"]'));
       const input = drawer?.querySelector('input[role="textbox"], [contenteditable="true"]');
       if ((input?.value ?? input?.innerText)?.trim() !== expected) return '';
-      const rows = [...(drawer?.querySelectorAll('[data-testid="contact-list-key"] [data-testid="cell-frame-container"]') || [])].filter(node => node.getBoundingClientRect().width > 0);
+      const rows = [...(drawer?.querySelectorAll('[data-testid="cell-frame-container"]') || [])].filter(node => node.getBoundingClientRect().width > 0);
       const names = [...new Set(rows.map(row => row.querySelector('[data-testid="cell-frame-title"]')?.innerText.trim()).filter(Boolean))];
       return names.length === 1 ? names[0] : '';
     }, phone);
@@ -94,7 +94,7 @@ async function verifyNamedRecipient(contents, phone, timeout = 15000) {
   const selected = await evaluate(contents, (expected, name) => {
     const drawer = [...document.querySelectorAll('[data-testid="new-chat-drawer"], [data-testid="drawer-left"]')].find(n=>n.querySelector('input[role="textbox"], [contenteditable="true"]'));
     const input = drawer?.querySelector('input[role="textbox"], [contenteditable="true"]');
-    const rows = [...(drawer?.querySelectorAll('[data-testid="contact-list-key"] [data-testid="cell-frame-container"]') || [])].filter(node => node.getBoundingClientRect().width > 0);
+    const rows = [...(drawer?.querySelectorAll('[data-testid="cell-frame-container"]') || [])].filter(node => node.getBoundingClientRect().width > 0);
     const matches = rows.filter(row => row.querySelector('[data-testid="cell-frame-title"]')?.innerText.trim() === name);
     const names = new Set(rows.map(row => row.querySelector('[data-testid="cell-frame-title"]')?.innerText.trim()).filter(Boolean));
     if ((input?.value ?? input?.innerText)?.trim() !== expected || !matches.length || names.size !== 1) return false;
@@ -106,18 +106,40 @@ async function verifyNamedRecipient(contents, phone, timeout = 15000) {
   await contents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mouseReleased',x:selected.x,y:selected.y,button:'left',clickCount:1});
   while (Date.now() - start < timeout) {
     const state = await evaluate(contents, inspectChat, phone);
-    if (state.composer && state.title === match && !await evaluate(contents, () => [...document.querySelectorAll('[data-testid="drawer-left"]')].some(n => n.getBoundingClientRect().width && /新聊天|New chat/.test(n.innerText.slice(0,30))))) {
+    if(state.composer && state.title && state.title!==match && !await evaluate(contents,()=>[...document.querySelectorAll('[data-testid="new-chat-drawer"]')].some(n=>n.getBoundingClientRect().width&&n.innerText.trim()))){
+      await nativeClick(contents,'[data-testid="conversation-info-header-button"]');
+      const deadline=Date.now()+15000;
+      while(Date.now()<deadline){
+        const correct=await evaluate(contents,expected=>[...document.querySelectorAll('[data-testid="drawer-right"]')].some(n=>n.getBoundingClientRect().width&&n.innerText.replace(/\D/g,'').includes(expected)),phone);
+        if(correct){
+          await evaluate(contents,()=>document.querySelector('[data-testid="drawer-right"] button[aria-label="关闭"], [data-testid="drawer-right"] button[aria-label="Close"]')?.click());
+          return {phone,title:state.title,headerId:state.headerId};
+        }
+        await wait(200);
+      }
+      throw new Error('用户名搜索结果对应的电话号码无法核实，消息未发送。');
+    }
+    if (state.composer && state.title.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,'').trim() === match.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,'').trim() && !await evaluate(contents, () => [...document.querySelectorAll('[data-testid="drawer-left"]')].some(n => n.getBoundingClientRect().width && /新聊天|New chat/.test(n.innerText.slice(0,30))))) {
       return { phone, title: state.title, headerId: state.headerId };
     }
     await wait(200);
   }
-  throw new Error('号码对应的会话尚未就绪，消息未发送。');
+  const diagnostic=await evaluate(contents,inspectChat,phone);
+  throw new Error('号码对应的会话尚未就绪，消息未发送。'+JSON.stringify({match,title:diagnostic.title,composer:diagnostic.composer}));
 }
 
 async function prepareRecipient(contents, phone, {mockUrl, readyTimeout = 45000} = {}) {
   const initial = await evaluate(contents, inspectChat, phone);
   if (initial.draft.trim()) throw new Error('所选账号有未发送草稿，请先处理草稿再继续任务。');
   if (initial.composer && initial.verified) return null;
+  if (!mockUrl && await evaluate(contents,()=>!!document.querySelector('button[aria-label="新聊天"],button[aria-label="New chat"]'))) {
+    try { return await verifyNamedRecipient(contents, phone, Math.min(readyTimeout,15000)); }
+    catch (error) {
+      // A username-directory result may not open as a normal contact. Only
+      // this unsupported branch falls back to WhatsApp's explicit phone route.
+      if (!/会话尚未就绪|唯一的联系人/.test(error.message)) throw error;
+    }
+  }
   await bounded(contents.loadURL(mockUrl ? `${mockUrl}?phone=${phone}` : `https://web.whatsapp.com/send?phone=${phone}`), readyTimeout);
   const start = Date.now();
   while (Date.now() - start < readyTimeout) {
@@ -131,28 +153,49 @@ async function prepareRecipient(contents, phone, {mockUrl, readyTimeout = 45000}
   throw new Error('会话输入框未就绪，请检查账号登录或网络连接。');
 }
 
-async function nativeClick(contents, selector) {
-  const point = await evaluate(contents, selector => {
-    const node = document.querySelector(selector);
-    if (!node) return null;
-    const r = node.getBoundingClientRect();
-    return r.width ? {x:r.x+r.width/2,y:r.y+r.height/2} : null;
-  }, selector);
-  if (!point) throw new Error('联系人操作入口未就绪。');
-  for (const type of ['mousePressed','mouseReleased']) await contents.debugger.sendCommand('Input.dispatchMouseEvent',{type,...point,button:'left',clickCount:1});
+async function nativeClick(contents, selector, timeout=10000) {
+  const deadline=Date.now()+timeout;
+  let previous=null;
+  while(Date.now()<deadline){
+    const point=await evaluate(contents,selector=>{
+      const nodes=[...document.querySelectorAll(selector)].filter(n=>n.getBoundingClientRect().width>0&&n.getBoundingClientRect().height>0&&!n.closest('[inert],[aria-hidden="true"]')&&!n.disabled&&n.getAttribute('aria-disabled')!=='true');
+      for(const node of nodes){
+        node.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});
+        const r=node.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+r.height/2;
+        const hit=document.elementFromPoint(x,y);
+        if(hit&&(hit===node||node.contains(hit)))return {x,y};
+      }
+      return null;
+    },selector);
+    if(point&&previous&&Math.abs(point.x-previous.x)<1&&Math.abs(point.y-previous.y)<1){
+      for(const type of ['mousePressed','mouseReleased'])await contents.debugger.sendCommand('Input.dispatchMouseEvent',{type,...point,button:'left',clickCount:1});
+      return;
+    }
+    previous=point;await wait(150);
+  }
+  throw new Error(`联系人控件不可点击（${selector}），尚未发送。`);
 }
 
-async function syncContactName(contents, phone, desiredName, binding, timeout=20000) {
+async function syncContactName(contents, phone, desiredName, binding, timeout=45000) {
   await nativeClick(contents,'[data-testid="conversation-info-header-button"]');
   const start=Date.now();
   let action;
+  let lastOpen = Date.now();
   while(Date.now()-start<timeout){
+    if (Date.now() - lastOpen > 1500) {
+      await evaluate(contents,()=>{
+        const panels=[...document.querySelectorAll('[data-testid="drawer-right"]')];
+        if(!panels.some(n=>n.getBoundingClientRect().width>0&&n.innerText.trim()))document.querySelector('[data-testid="conversation-info-header-button"]')?.click();
+      });
+      lastOpen=Date.now();
+    }
     action=await evaluate(contents,(phone)=>{
-      const drawer=document.querySelector('[data-testid="drawer-right"]');
+      const drawer=[...document.querySelectorAll('[data-testid="drawer-right"]')].find(n=>n.getBoundingClientRect().width>0&&n.getBoundingClientRect().height>0&&n.innerText.replace(/\D/g,'').includes(phone));
       if(!drawer||!drawer.innerText.replace(/\D/g,'').includes(phone))return null;
-      const buttons=[...drawer.querySelectorAll('button,[role="button"]')];
+      document.querySelectorAll('[data-artway-contact-action]').forEach(n=>n.removeAttribute('data-artway-contact-action'));
+      const buttons=[...drawer.querySelectorAll('button,[role="button"]')].filter(n=>n.getBoundingClientRect().width>0&&n.getBoundingClientRect().height>0);
       const edit=buttons.find(n=>/^(编辑|Edit)$/i.test(n.getAttribute('aria-label')||''));
-      const add=buttons.find(n=>/^(添加到联系人|添加联系人|保存联系人|Add to contacts|Save contact)$/i.test((n.getAttribute('aria-label')||n.innerText).trim()));
+      const add=buttons.find(n=>/^(添加|添加到联系人|添加联系人|保存联系人|Add|Add to contacts|Save contact)$/i.test((n.getAttribute('aria-label')||n.innerText).trim()));
       const node=edit||add;
       if(!node)return null;
       node.setAttribute('data-artway-contact-action','true');return {edit:!!edit};
@@ -170,28 +213,53 @@ async function syncContactName(contents, phone, desiredName, binding, timeout=20
     await wait(200);
   }
   for(const [selector,value] of [['[data-testid="contact-first-name-input"]',desiredName],['[data-testid="contact-last-name-input"]','']]){
-    const ready=await evaluate(contents,selector=>{
-      const node=document.querySelector(selector);if(!node)return false;
-      node.focus();const range=document.createRange();range.selectNodeContents(node);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);return true;
-    },selector);
-    if(!ready)throw new Error('联系人姓名输入框未就绪。');
-    await contents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyDown',key:'Backspace',code:'Backspace',windowsVirtualKeyCode:8});
-    await contents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyUp',key:'Backspace',code:'Backspace',windowsVirtualKeyCode:8});
-    if(value)await contents.insertText(value);
+    let matched=false;
+    for(let attempt=0;attempt<3&&!matched;attempt++){
+      await nativeClick(contents,selector);
+      // Lexical restores its own selection after focus. Use Chromium's editing
+      // command rather than a DOM Range followed immediately by Backspace.
+      await wait(150);
+      await contents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyDown',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:2,commands:['selectAll']});
+      await contents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:2});
+      await contents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyDown',key:'Backspace',code:'Backspace',windowsVirtualKeyCode:8});
+      await contents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyUp',key:'Backspace',code:'Backspace',windowsVirtualKeyCode:8});
+      await wait(100);
+      if(value)await contents.insertText(value);
+      await wait(200);
+      matched=await evaluate(contents,(selector,value)=>{
+        const node=document.querySelector(selector);
+        const normalize=text=>String(text||'').replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,'').replace(/\s+/g,' ').trim();
+        return !!node&&normalize(node.innerText)===normalize(value);
+      },selector,value);
+    }
+    if(!matched)throw new Error('联系人姓名输入未生效，已停止发送；请检查联系人编辑页。');
   }
-  const valid=await evaluate(contents,desired=>document.querySelector('[data-testid="contact-first-name-input"]')?.innerText.trim()===desired&&!document.querySelector('[data-testid="contact-last-name-input"]')?.innerText.trim(),desiredName);
-  if(!valid)throw new Error('联系人名称填写校验失败，未发送。');
-  const save=await evaluate(contents,()=>{
-    const scope=document.querySelector('[data-testid="drawer-right"]')||document;
-    const node=scope.querySelector('[data-testid="save-contact-btn"]')||[...scope.querySelectorAll('button,[role="button"]')].find(n=>/^(保存|保存联系人|Save|Save contact)$/i.test((n.getAttribute('aria-label')||n.innerText).trim()));
-    if(!node)return false;node.setAttribute('data-artway-contact-save','true');return true;
-  });
-  if(!save)throw new Error('未找到联系人保存按钮，未发送。');
+  let save=false;
+  const saveDeadline=Date.now()+10000;
+  while(!save&&Date.now()<saveDeadline){
+    save=await evaluate(contents,()=>{
+      document.querySelectorAll('[data-artway-contact-save]').forEach(n=>n.removeAttribute('data-artway-contact-save'));
+      const nodes=[...document.querySelectorAll('[data-testid="save-contact-drawer"] [data-testid="save-contact-btn"], [data-testid="drawer-right"] [data-testid="save-contact-btn"], [data-testid="save-contact-drawer"] button, [data-testid="save-contact-drawer"] [role="button"], [data-testid="drawer-right"] button, [data-testid="drawer-right"] [role="button"]')];
+      const node=nodes.find(n=>n.getBoundingClientRect().width>0&&n.getBoundingClientRect().height>0&&!n.disabled&&n.getAttribute('aria-disabled')!=='true'&&(n.getAttribute('data-testid')==='save-contact-btn'||/^(保存|保存联系人|Save|Save contact)$/i.test((n.getAttribute('aria-label')||n.innerText).trim())));
+      if(!node)return false;node.setAttribute('data-artway-contact-save','true');return true;
+    });
+    if(!save)await wait(200);
+  }
+  if(!save){
+    // Saving is unnecessary if both stored fields already match the target.
+    const same=await evaluate(contents,desired=>{
+      const first=document.querySelector('[data-testid="contact-first-name-input"]');
+      const last=document.querySelector('[data-testid="contact-last-name-input"]');
+      return first?.innerText.trim()===desired&&!last?.innerText.trim()&&document.querySelector('#main header [data-testid="conversation-info-header-chat-title"]')?.innerText.trim()===desired;
+    },desiredName);
+    if(same){for(const type of ['keyDown','keyUp'])await contents.debugger.sendCommand('Input.dispatchKeyEvent',{type,key:'Escape',code:'Escape',windowsVirtualKeyCode:27});return {phone,title:desiredName,headerId:(await evaluate(contents,inspectChat,phone)).headerId};}
+    throw new Error('联系人保存按钮未就绪，未发送。');
+  }
   await nativeClick(contents,'[data-artway-contact-save="true"]');
   const savedAt=Date.now();
   while(Date.now()-savedAt<timeout){
     const state=await evaluate(contents,inspectChat,phone,'',[],null,binding);
-    if(state.title===desiredName&&!await evaluate(contents,()=>!!document.querySelector('[data-testid="contact-first-name-input"]'))){
+    if(state.title===desiredName&&!await evaluate(contents,()=>[...document.querySelectorAll('[data-testid="contact-first-name-input"]')].some(n=>n.getBoundingClientRect().width>0&&n.getBoundingClientRect().height>0))){
       await evaluate(contents,()=>document.querySelector('[data-testid="drawer-right"] button[aria-label="关闭"], [data-testid="drawer-right"] button[aria-label="Close"]')?.click());
       return {phone,title:state.title,headerId:state.headerId};
     }
@@ -273,17 +341,22 @@ async function sendWhatsAppMessage(contents, row, onDispatch, { mockUrl, readyTi
 async function uploadAttachment(contents, attachment, testPage = false) {
   // Intercept before the menu click: setting files via DOM does not close a
   // native Windows picker that WhatsApp has already opened.
+  let chooser = null;
+  const onChooser = (_event, method, params) => { if (method === 'Page.fileChooserOpened') chooser = params; };
+  contents.debugger.on('message', onChooser);
+  await contents.debugger.sendCommand('Page.enable');
   await contents.debugger.sendCommand('Page.setInterceptFileChooserDialog', { enabled: true });
   try {
-    return await uploadAttachmentFile(contents, attachment, testPage);
+    return await uploadAttachmentFile(contents, attachment, testPage, () => chooser);
   } finally {
+    contents.debugger.removeListener('message', onChooser);
     if (!contents.isDestroyed() && contents.debugger.isAttached()) {
       await contents.debugger.sendCommand('Page.setInterceptFileChooserDialog', { enabled: false });
     }
   }
 }
 
-async function uploadAttachmentFile(contents, attachment, testPage = false) {
+async function uploadAttachmentFile(contents, attachment, testPage = false, getChooser = () => null) {
   const fs=require('node:fs');
   if(!fs.existsSync(attachment.path))throw new Error(`附件“${attachment.name}”已丢失。`);
   if(!testPage) await evaluate(contents,()=>{
@@ -310,18 +383,23 @@ async function uploadAttachmentFile(contents, attachment, testPage = false) {
   })();
   if(!menuClicked)throw new Error(`未找到“${attachment.kind==='image'?'照片和视频':'文档'}”入口，图片未发送。`);
   await wait(testPage?0:350);
-  const inputSelector=await evaluate(contents,kind=>{
-    document.querySelectorAll('[data-artway-upload]').forEach(input=>input.removeAttribute('data-artway-upload'));
-    const inputs=[...document.querySelectorAll('input[type="file"]')].filter(input=>input.getBoundingClientRect().width>=0);
-    const input=inputs.find(input=>kind==='image'?(/video/.test(input.accept)&&input.multiple):(!input.accept||!/(image|video)/.test(input.accept))) || inputs.find(input=>kind==='image'?/image/.test(input.accept):!input.accept);
-    if(!input)return null;input.setAttribute('data-artway-upload','active');return 'input[data-artway-upload="active"]';
-  },attachment.kind);
-  if(!inputSelector)throw new Error('未找到图片或附件上传入口，请检查 WhatsApp 页面。');
   await contents.debugger.sendCommand('DOM.enable');
-  const documentNode=await contents.debugger.sendCommand('DOM.getDocument',{});
-  const {nodeId}=await contents.debugger.sendCommand('DOM.querySelector',{nodeId:documentNode.root.nodeId,selector:inputSelector});
-  if(!nodeId)throw new Error('附件上传入口已失效。');
-  await contents.debugger.sendCommand('DOM.setFileInputFiles',{nodeId,files:[attachment.path]});
+  if (!testPage) {
+    const deadline = Date.now() + 5000;
+    while (!getChooser() && Date.now() < deadline) await wait(100);
+    const chooser = getChooser();
+    if (!chooser?.backendNodeId) throw new Error('未捕获本次照片/文档选择入口，已停止上传，避免使用贴图入口。');
+    const {node} = await contents.debugger.sendCommand('DOM.describeNode', {backendNodeId: chooser.backendNodeId});
+    const attrs = Object.fromEntries(Array.from({length: (node.attributes || []).length / 2}, (_,i) => [node.attributes[i*2], node.attributes[i*2+1]]));
+    if (attachment.kind === 'image' && (!/video/.test(attrs.accept || '') || !Object.hasOwn(attrs,'multiple'))) throw new Error('本次文件入口不是照片和视频，已停止上传。');
+    await contents.debugger.sendCommand('DOM.setFileInputFiles', {backendNodeId: chooser.backendNodeId, files: [attachment.path]});
+  } else {
+    const documentNode=await contents.debugger.sendCommand('DOM.getDocument',{});
+    const selector=attachment.kind==='image'?'input[type="file"][multiple]':'input[type="file"]:not([accept])';
+    const {nodeId}=await contents.debugger.sendCommand('DOM.querySelector',{nodeId:documentNode.root.nodeId,selector});
+    if(!nodeId)throw new Error('测试附件入口不可用。');
+    await contents.debugger.sendCommand('DOM.setFileInputFiles',{nodeId,files:[attachment.path]});
+  }
   const start=Date.now();
   while(Date.now()-start<20000){
     const ready=await evaluate(contents,()=>{
@@ -333,4 +411,4 @@ async function uploadAttachmentFile(contents, attachment, testPage = false) {
   throw new Error('附件预览未就绪，没有发送此附件。');
 }
 
-module.exports = { sendWhatsAppMessage, inspectChat, prepareRecipient, syncContactName, evaluate };
+module.exports = { sendWhatsAppMessage, inspectChat, prepareRecipient, syncContactName, evaluate, uploadAttachment };

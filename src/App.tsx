@@ -76,7 +76,7 @@ export function App() {
   const [accounts, setAccounts] = useState<WhatsAppAccount[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [statuses, setStatuses] = useState<Record<string, AccountRuntimeStatus>>({});
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
@@ -115,6 +115,23 @@ export function App() {
       cancelled = true;
     };
   }, [reportError]);
+
+  // Keep customer data current even while the customer page is unmounted.
+  useEffect(() => {
+    let live = true;
+    let request = 0;
+    const refresh = () => {
+      const version = ++request;
+      void window.artway.listCustomers().then(items => {
+        if (live && version === request) setCustomers(items);
+      }).catch(reason => { if (live) reportError(reason); });
+    };
+    const unsubscribe = window.artway.onCampaignUpdate(job => {
+      if (job.rows.some(row => row.status === 'succeeded' && row.contactRecorded)) refresh();
+    });
+    if (page === 'customers') refresh();
+    return () => { live = false; unsubscribe(); };
+  }, [page, reportError]);
 
   useEffect(() => {
     return window.artway.onAccountStatus((event: AccountStatusEvent) => {
